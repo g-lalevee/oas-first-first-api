@@ -1,0 +1,122 @@
+openapi: 3.0.0
+info:
+  description: Get Airports list and details
+  version: 1.0.0-oas3
+  title: Airports
+  contact:
+    name: Apigee Devrel
+    url: https://github.com/apigee/devrel
+  license:
+    name: Apache 2.0
+    url: http://www.apache.org/licenses/LICENSE-2.0.html
+tags:
+  - name: Airport
+    description: Operations available to regular developers
+servers:
+  - url: https://34.117.38.184.nip.io/airports-cicd/v1
+paths:
+  /airports:
+    get:
+      summary: Get list of airports
+      tags:
+        - Airport
+      description: Request list of all airports
+      operationId: listAirports
+      responses:
+        '200':
+          $ref: '#/components/responses/OKRequestList'
+  /airports/{id}:
+    get:
+      summary: Get details of one airport
+      tags:
+        - Airport
+      description: Request airport details from IATA code
+      operationId: GetAirport
+      parameters:
+        - in: path
+          name: id
+          description: airport IATA code
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          $ref: '#/components/responses/OKRequestAirport'
+        '404':
+          $ref: '#/components/responses/KONotFound'
+components:
+  responses:
+    OKRequestList:
+      description: OK. The request has succeeded
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ListOfAirports'
+    OKRequestAirport:
+      description: OK. The request has succeeded
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Airport'
+    KONotFound:
+      description: KO. requested Airport not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/NotFound'
+  schemas:
+    ListOfAirports:
+      title: List of Airport objects
+      type: array
+      items:
+        $ref: '#/components/schemas/Airport'
+    Airport:
+      title: Airport
+      type: object
+      properties:
+        rank:
+          description: rank number in list
+          type: integer
+          example: 9
+        airport:
+          description: airport name
+          type: string
+          example: France Charles de Gaulle Airport
+        location:
+          description: airport location = city, state
+          type: string
+          example: Roissy-en-France, Île-de-France
+        country:
+          description: airport location = country
+          type: string
+          example: France
+        iata:
+          description: iata code
+          type: string
+          example: CDG
+        icao:
+          description: icao code
+          type: string
+          example: LFPG
+    NotFound:
+      title: Not Found error
+      type: object
+      properties:
+        errror:
+          description: rank number in list
+          type: object
+          properties:
+            errors:
+              type: array
+              items:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Not Found
+            code:
+              type: integer
+              example: 404
+            message:
+              type: string
+              example: Not Found

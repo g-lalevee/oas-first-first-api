@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Quota continueOnError="false" enabled="true" name="Q-checkQuota" type="calendar">
+  <DisplayName>Q-checkQuota</DisplayName>
+  <Properties/>
+  <Interval ref="verifyapikey.VA-verifyKey.apiproduct.developer.quota.interval">1</Interval>
+  <TimeUnit ref="verifyapikey.VA-verifyKey.apiproduct.developer.quota.timeunit">hour</TimeUnit>
+  <Allow count="200" countRef="verifyapikey.VA-verifyKey.apiproduct.developer.quota.limit"/>
+  <Distributed>false</Distributed>
+  <Synchronous>false</Synchronous>
+  <StartTime>2013-08-21 10:00:00</StartTime>
+</Quota>

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<SpikeArrest continueOnError="false" enabled="true" name="SA-rateLimit">
+  <DisplayName>SA-rateLimit</DisplayName>
+  <Properties/>
+  <Rate>30ps</Rate>
+</SpikeArrest>

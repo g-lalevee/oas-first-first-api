@@ -1,0 +1,261 @@
+
+name: Apigee OAS-First pipeline
+
+on: push
+
+
+# Needed to write files to the repository (JOB2)
+permissions:
+  contents: write
+
+
+env:
+  APIGEE_DEPLOYMENT_SUFFIX: "-demo"
+
+  # Default Target Apigee Organization et environment 
+  # and Target Server URL are in .env file
+
+  # GCP Service Account Key used to deploy proxy
+  GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+  # GCP Service Account email to be used to access GCP services from proxy
+  # (specified at deployment step)
+  APIGEE_GOOGLE_TOKEN_EMAIL: ${{ secrets.APIGEE_GOOGLE_TOKEN_EMAIL }}
+
+  COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+
+jobs:
+
+# JOB 1  ------------------------------------------------------------------------
+
+
+  generate-apigee-proxy:
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    runs-on: ubuntu-latest
+    outputs:
+      api_url: ${{ steps.generate_apigee_proxy.outputs.api_url }}
+
+    steps:
+      - uses: actions/checkout@v4
+      
+      # Install apigee-go-gen
+      - name: Install apigee-go-gen
+        shell: bash
+        run: |
+          # bash install-apigee-go-gen 
+          # change it to apigee-go-gen when issue fixed !!!!
+          curl -s https://raw.githubusercontent.com/g-lalevee/apigee-go-gen/issue-11/install | bash
+
+
+      # Generate Apigee proxy from spec except if Git message contains [skip generate]
+      - name: Generate_Apigee_Proxy_with_Apigee_Go_Gen
+        id: generate_apigee_proxy
+        run: |
+
+          # retrieve API URL from .env file: new_url
+          echo "INFO ---------- Retrieve Target API URL from .env file"
+          set -a
+          source .env
+          set +a
+          # echo $new_url
+          
+           if [[ "$COMMIT_MESSAGE" == *"[skip generate]"* ]]; then
+            echo "INFO ---------- [skip generate] requested"
+            if [ ! -d "apiproxy" ]; then 
+              echo "ERROR ---------- proxy does not exist, exit"
+              exit 1
+            fi
+          else
+            echo "INFO ---------- Generate Apigee Proxy"
+            apigee-go-gen render apiproxy --template ./templates/oas/apiproxy.yaml \
+            --include ./templates/oas/*.tmpl \
+            --set target_server_url=$new_url \
+            --set-oas spec=./specs/oas/proxy/spec.yaml \
+            --output ./
+          fi
+
+          # retrieve API URL from specification file
+          echo "INFO ---------- Get API URL from Spec File"
+          export api_url=$(cat ./specs/oas/target/airports-cicd.yaml | apigee-go-gen transform yaml-to-json | jq -r .servers[0].url | cut -c 9-)
+          echo "api_url=$api_url"
+          echo "api_url=$api_url" >> $GITHUB_OUTPUT
+
+
+      - name: Archive Artifact Proxy code
+        uses: actions/upload-artifact@v4
+        with:
+          name: apiproxy
+          path:  ./apiproxy
+          retention-days: 5
+
+# JOB 2 ------------------------------------------------------------------------
+
+  deploy-apigee-proxy:
+    needs: [Generate-Apigee-Proxy]
+    if: "!contains(github.event.head_commit.message, '[skip ci]') && !contains(github.event.head_commit.message, '[skip deploy]')"
+    runs-on: ubuntu-latest
+    env:
+      api_url: ${{ needs.generate-apigee-proxy.outputs.api_url }} 
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Download Apigee proxy folder from JOB 1
+      - name: Download Proxy code
+        uses: actions/download-artifact@v4
+        with:
+          name: apiproxy
+          path: apiproxy
+
+
+      # Get variables from .env file : Apigee orgnization and Apigee environment
+      - name: Get variables from .env file
+        id: get_variables
+        run: |
+          echo "INFO ---------- Get target Apigee Organization and Environment from .env file"
+          set -a
+          source .env
+          set +a
+          echo "DEFAULT_APIGEE_ORG=$(echo $apigee_org)" >> $GITHUB_ENV
+          echo "DEFAULT_APIGEE_ENV=$(echo $apigee_env)" >> $GITHUB_ENV
+
+
+  # Set Apigee variables depending on Git branch 
+      - name: Set Variables for [Main] branch
+        if: github.ref == 'refs/heads/main'
+        run: |
+          echo "AUTHOR_EMAIL=$(echo $GITHUB_ACTOR)" >> $GITHUB_ENV
+          echo "APIGEE_ORG=$(echo $DEFAULT_APIGEE_ORG)" >> $GITHUB_ENV
+          echo "APIGEE_ENV=$(echo $DEFAULT_APIGEE_ENV)" >> $GITHUB_ENV
+
+      - name: Set Variables for [Prod] branch
+        if: github.ref == 'refs/heads/prod'
+        run: |
+          echo "AUTHOR_EMAIL=$(echo $GITHUB_ACTOR)" >> $GITHUB_ENV
+          echo "APIGEE_ORG=$(echo $DEFAULT_APIGEE_ORG)" >> $GITHUB_ENV
+          echo "APIGEE_ENV=prod" >> $GITHUB_ENV
+  
+      - name: Set Variables for branch not [Main], not [Prod]
+        if: github.ref != 'refs/heads/main' && github.ref != 'refs/heads/prod'
+        run: |
+          echo "AUTHOR_EMAIL=$(echo $GITHUB_ACTOR)" >> $GITHUB_ENV
+          echo "APIGEE_ORG=$(echo $DEFAULT_APIGEE_ORG)" >> $GITHUB_ENV
+          echo "APIGEE_ENV=$(echo $DEFAULT_APIGEE_ENV)" >> $GITHUB_ENV
+
+
+  # Create Dependencies (npm) Cache 
+      - name: Cache node modules
+        uses: actions/cache@v4
+        env:
+          cache-name: cache-node-modules
+        with:
+          # npm cache files are stored in `~/.npm` 
+          path: ~/.npm
+          key: ${{ runner.os }}-build-${{ env.cache-name }}-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-build-${{ env.cache-name }}-
+            ${{ runner.os }}-build-
+            ${{ runner.os }}-
+
+
+  # Install dependencies (npm)
+      - name: Install Dependencies
+        run: npm install --silent --no-fund
+
+
+  # Validate Specification file (OAS, Swagger) using Stoplight Spectral
+  # + upload artifact (spectral-report.html)
+      - name: Run Spectral
+        run: ./node_modules/.bin/spectral lint -r ./test/spectral/.spectral.yaml -f html -o spectral-report.html ./specs/oas/airport-cicd.yaml  || true  # catch all errors for demo purpose 
+
+      - name: Archive Artifact Spectral results
+        uses: actions/upload-artifact@v4
+        with:
+          name: spectral-report
+          path:  ./spectral-report.html
+          retention-days: 5
+
+
+  # Run apigeeLint test + upload artifact (apigeelint-out.html)
+      - name: Run Apigeelint
+        run:  ./node_modules/apigeelint/cli.js -s ./apiproxy -f html.js -e PO013,PO025,BN001 > ./apigeelint-out.html
+
+      - name: Archive Artifact Apigeelint results
+        uses: actions/upload-artifact@v4
+        with:
+          name: apigeelint-report
+          path: ./apigeelint-out.html
+          retention-days: 5
+
+
+  # Setup Maven & Maven Cache
+      - name: Set up JDK 1.8
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin' 
+          java-version: 8
+
+      - name: Cache the Maven packages to speed up build
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2
+          key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
+          restore-keys: ${{ runner.os }}-m2   
+
+
+  # Generate SA key file from secret variable
+      - name: Generate SA key file
+        run: echo $GCP_SERVICE_ACCOUNT > sa.json
+
+
+  # Deploy Apigee Config (Apigee [Config] Maven plugin)
+     
+      - name: mvn deploy config xhybrid
+        run:  |
+          sed -i "s/target_apigee_env/$APIGEE_ENV/g" ./edgeConfig/edge.json
+          cat ./edgeConfig/edge.json
+          mvn install -q -Pgoogleapi -Dapigee.org=$APIGEE_ORG -Denv=$APIGEE_ENV -Dsa=sa.json -Dapigee.config.file=./edgeConfig/edge.json -Dapigee.config.options=update
+
+
+  # Package & Deploy Apigee proxy (Apigee [Deploy] Maven plugin)
+      - name: mvn package
+        run: mvn process-resources -Pgoogleapi -Dcommit=$GIT_COMMIT -Dauthor=$AUTHOR_EMAIL -Ddeployment.suffix=$APIGEE_DEPLOYMENT_SUFFIX
+
+      - name: mvn deploy proxy xhybrid
+        run: |
+          mvn apigee-enterprise:configure -q -Pgoogleapi -Dorg=$APIGEE_ORG -Denv=$APIGEE_ENV  -Ddeployment.suffix=$APIGEE_DEPLOYMENT_SUFFIX 
+          mvn apigee-enterprise:deploy -q -Pgoogleapi -Denv=$APIGEE_ENV -Dsa=sa.json -Dorg=$APIGEE_ORG -DgoogleTokenEmail=$APIGEE_GOOGLE_TOKEN_EMAIL   -Ddeployment.suffix=$APIGEE_DEPLOYMENT_SUFFIX  
+
+  # Run Integration testing (Apickli) + upload artifact (cucumber_report.html)
+      - name: Run Apickli
+        run: |
+          # update apickli config file (init.js) with API hostname and base path
+          sed -i "s@api_url@$api_url@g" ./test/integration/features/support/init.js
+          
+          # NODE_TLS_REJECT_UNAUTHORIZED required to support self signed certificate
+          # export NODE_TLS_REJECT_UNAUTHORIZED=0
+
+          node ./node_modules/.bin/cucumber-js  ./test/$PROXY_NAME/integration --format json:./report.json
+          node ./test/integration/index.js
+
+      - name: Archive Artifact Apickli results
+        uses: actions/upload-artifact@v4
+        with:
+          name: apickli-report
+          path: ./cucumber_report.html
+          retention-days: 5
+
+      # Builds project when is PR to the `main` branch
+      - name: Commit Proxy code into GitHub repo
+        if: "!contains(github.event.head_commit.message, '[skip generate]')"
+        run: |
+          if [[ `git status --porcelain | grep apiproxy` ]];  then
+            git config user.name github-actions
+            git config user.email github-actions@github.com
+            git add apiproxy
+            git commit -m "Generated proxy (from #$(echo $GITHUB_SHA | cut -c1-7))" --no-verify
+            git push --no-verify            
+          fi
+          
+
+       
